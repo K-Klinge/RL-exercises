@@ -61,7 +61,14 @@ def train(cfg: DictConfig) -> float:
         agent = RandomAgent(env)
     else:
         # TODO: add your agent options here
-        raise NotImplementedError
+        if __name__ == "__main__":
+            match cfg.agent:
+                case "policy_iteration":
+                    agent = PolicyIteration(env=env)
+                case "value_iteration":
+                    agent = ValueIteration(env=env)
+                case _:
+                    raise NotImplementedError()
 
     buffer_cls = eval(cfg.buffer_cls)
     buffer = buffer_cls(**cfg.buffer_kwargs)

@@ -1,0 +1,5 @@
+Both methods won't work out of the box because they rely on the transition probabilities (P) and the reward matrix (R).
+Both matrices are unknown in a `step`-scenario.
+Thus, we have to modify the approaches to either estimate the dynamics of the environment (or the matrices P and R)
+using some kind of model (model-based approach) or trying to predict the optimal Q and V values directly from the
+current state, action, and the reward (model-free approach).
