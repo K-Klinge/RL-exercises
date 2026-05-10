@@ -4,6 +4,8 @@ Deep Q-Learning implementation.
 
 from typing import Any, Dict, List, Tuple
 
+import math
+
 import gymnasium as gym
 import hydra
 import numpy as np
@@ -134,7 +136,9 @@ class DQNAgent(AbstractAgent):
         # TODO: implement exponential‐decayin
         # ε = ε_final + (ε_start - ε_final) * exp(-total_steps / ε_decay)
         # Currently, it is constant and returns the starting value ε
-        return self.epsilon_start
+        return self.epsilon_final + (
+            self.epsilon_start - self.epsilon_final
+        ) * math.exp(-self.total_steps / self.epsilon_decay)
 
     def predict_action(
         self, state: np.ndarray, info: Dict[str, Any] = {}, evaluate: bool = False
@@ -162,16 +166,19 @@ class DQNAgent(AbstractAgent):
             # purely greedy
             t = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
             with torch.no_grad():
-                qvals = ...
-            action = None
+                qvals = self.q.forward(t)
+            action = torch.argmax(qvals).item()
         else:
             # ε-greedy
             if np.random.rand() < self.epsilon():
                 # TODO: sample random action
-                action = None
+                action = np.random.choice(self.env.action_space.n)
             else:
                 # TODO: select purely greedy action from Q(s)
-                action = None
+                t = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+                with torch.no_grad():
+                    qvals = self.q.forward(t)
+                action = torch.argmax(qvals).item()
 
         return action
 
@@ -231,13 +238,14 @@ class DQNAgent(AbstractAgent):
 
         # current Q estimates for taken actions
         # TODO: pass batched states through self.q and gather Q(s,a)
-        pred = ...
+        pred = self.q.forward(s).gather(1, a)
 
         # TODO: compute TD target with frozen network
         with torch.no_grad():
-            target = ...
+            next_q = torch.max(self.target_q.forward(s_next), dim=1)[0]
+            target = r + self.gamma * (next_q * (1 - mask))
 
-        loss = nn.MSELoss()(pred, target)
+        loss = nn.MSELoss()(pred.squeeze(1), target)
 
         # gradient step
         self.optimizer.zero_grad()
@@ -251,7 +259,9 @@ class DQNAgent(AbstractAgent):
         self.total_steps += 1
         return float(loss.item())
 
-    def train(self, num_frames: int, eval_interval: int = 1000) -> None:
+    def train(
+        self, num_frames: int, eval_interval: int = 1000
+    ) -> Tuple[List[int], List[float]]:
         """
         Run a training loop for a fixed number of frames.
 
@@ -261,10 +271,18 @@ class DQNAgent(AbstractAgent):
             Total environment steps.
         eval_interval : int
             Every this many episodes, print average reward.
+
+        Returns
+        -------
+        episode_end_frames : list of int
+            Frame index at which each episode terminated.
+        recent_rewards : list of float
+            Episode return for each completed episode (same length).
         """
         state, _ = self.env.reset()
         ep_reward = 0.0
         recent_rewards: List[float] = []
+        episode_end_frames: List[int] = []
 
         for frame in range(1, num_frames + 1):
             action = self.predict_action(state)
@@ -278,22 +296,26 @@ class DQNAgent(AbstractAgent):
             # update if ready
             if len(self.buffer) >= self.batch_size:
                 # TODO: sample batch from replay buffer
-                batch = ...
+                batch = self.buffer.sample(self.batch_size)
                 _ = self.update_agent(batch)
 
             if done or truncated:
                 state, _ = self.env.reset()
                 recent_rewards.append(ep_reward)
+                episode_end_frames.append(frame)
+
                 ep_reward = 0.0
                 # logging
-                if len(recent_rewards) % 10 == 0:
+                if len(recent_rewards) % eval_interval == 0:
                     # TODO: compute avg over last eval_interval episodes and print
-                    avg = ...
+                    window = recent_rewards[-eval_interval:]
+                    avg = sum(window) / len(window)
                     print(
-                        f"Frame {frame}, AvgReward(10): {avg:.2f}, ε={self.epsilon():.3f}"
+                        f"Frame {frame}, AvgReward({eval_interval}): {avg:.2f}, ε={self.epsilon():.3f}"
                     )
 
         print("Training complete.")
+        return episode_end_frames, recent_rewards
 
 
 @hydra.main(config_path="../configs/agent/", config_name="dqn", version_base="1.1")
@@ -303,11 +325,14 @@ def main(cfg: DictConfig):
     set_seed(env, cfg.seed)
 
     # 2) TODO: map config → agent kwargs
-    agent_kwargs = dict(...)
+    agent_kwargs = dict(cfg.agent)
 
     # 3) TODO:instantiate & train
-    agent = ...
-    agent.train(...)
+    agent = DQNAgent(env, **agent_kwargs)
+    _frames, _rewards = agent.train(
+        num_frames=cfg.train.num_frames,
+        eval_interval=cfg.train.eval_interval,
+    )
 
 
 if __name__ == "__main__":

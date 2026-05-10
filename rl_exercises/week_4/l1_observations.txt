@@ -1,0 +1,43 @@
+Experiment 1 - Batch Size
+
+Configuration:
+- batch_size = {32, 64, 128}
+- learning_rate = 0.001
+- buffer_capacity = 10_000
+- network width = 64
+- network depth = 2
+
+When training with a batch size of 64, the reward tends to be less volatile compared to the other configurations. This
+leads to the agent to be more stable. However, the peak performance is the worst in all configurations.
+The agent trained with a batch size of 32 took more steps until any meaningful improvement of the reward was observable,
+and it also took a bit longer to converge.
+The agent trained with a batch size of 128 was the fastest to reach the optimal reward, but it is also more volatile.
+
+
+Experiment 2 - Buffer Capacity
+
+Configuration:
+- batch_size = 64
+- learning_rate = 0.001
+- buffer_capacity = {5_000, 10_000, 15_000}
+- network width = 64
+- network depth = 2
+
+The agent trained with a buffer capacity of 5_000 had a
+large drop in reward in the last 30-50 training steps.
+The agents trained with a buffer capacity of 10_000 and 15_000 lead to similar results. However, the agent trained with
+buffer capacity of 15_000 had a strong reward peak, which is likely due to chance.
+
+
+Experiment 3 - Network Width
+
+Configuration:
+- batch_size = 64
+- learning_rate = 0.001
+- buffer_capacity = 10_000
+- network width = {32, 64, 128}
+- network depth = 2
+
+The agents trained with a network width of 32 and 128 lead to similar results. It is noteworthy that a network width of
+128 introduces a significant volatility in the reward (maybe overfitting).
+The agent using a network width of 64 performed similar to the other agents, but required fewer time-steps to do so.
