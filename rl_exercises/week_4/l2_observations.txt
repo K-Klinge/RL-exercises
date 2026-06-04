@@ -1,0 +1,4 @@
+Plain average curves hide the volatility of the returns. The RLiable plots visualize them correctly, such that it is
+much easier to recognize when the agent starts struggling to learn the environment (large increase in volatility).
+
+Thus, one can be more confident in the actual performance of the agent when using RLiable plots compared to averages.
