@@ -6,12 +6,15 @@ Adds GAE for low-variance advantage estimation.
 
 from typing import Any, List, Tuple
 
+import csv
+
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from rl_exercises.agent import AbstractAgent
 from rl_exercises.week_6.networks import (  # adjust import path as needed
@@ -87,15 +90,22 @@ class ActorCriticAgent(AbstractAgent):
         self, states: List[np.ndarray], rewards: List[float]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # TODO: convert rewards into discounted returns
+        returns = self.compute_returns(rewards)
 
         # TODO: convert states list into a torch batch and compute state-values
+        states = torch.stack([torch.from_numpy(s) for s in states])
+        values = self.value_fn(states)
 
         # TODO: compute raw advantages = returns - values
+        raw_advantages = returns - values
 
         # TODO: normalize advantages to zero mean and unit variance and use 1e-8 for numerical stability
+        advantages = (raw_advantages - raw_advantages.mean()) / (
+            raw_advantages.std(unbiased=False) + 1e-8
+        )
 
         # return normalized advantages and returns
-        return None  # template placeholder
+        return advantages, returns
 
     def compute_gae(
         self,
@@ -105,18 +115,37 @@ class ActorCriticAgent(AbstractAgent):
         dones: List[bool],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # TODO: compute values and next_values using your value_fn
+        dones_th = torch.tensor(dones, dtype=torch.float32)
+        states_th = torch.stack([torch.from_numpy(s) for s in states])
+        next_states_th = torch.stack([torch.from_numpy(s) for s in next_states])
+
+        values = self.value_fn(states_th)
+        next_values = self.value_fn(next_states_th)
 
         # TODO: compute deltas: one-step TD errors
+        td_error = (
+            torch.tensor(rewards) + self.gamma * next_values * (1 - dones_th) - values
+        )
 
         # TODO: accumulate GAE advantages backwards
+        gae = 0.0
+        advantages = torch.zeros_like(td_error)
+
+        for t in reversed(range(len(td_error))):
+            gae = td_error[t] + self.gamma * self.gae_lambda * (1 - dones_th[t]) * gae
+            advantages[t] = gae
 
         # TODO: compute returns using advantages and values
+        returns = advantages + values
 
         # TODO: normalize advantages to zero mean and unit variance and use 1e-8 for numerical stability
+        advantages = (advantages - advantages.mean()) / (
+            advantages.std(unbiased=False) + 1e-8
+        )
 
         # TODO: advantages, returns  # replace with actual values (detach both to avoid re-entering the graph)
 
-        return None  # template placeholder
+        return advantages.detach(), returns.detach()
 
     def update_agent(
         self,
@@ -135,13 +164,18 @@ class ActorCriticAgent(AbstractAgent):
             ret = self.compute_returns(list(rewards))
 
             # TODO: compute advantages by subtracting running return
-            adv = ...  # template placeholder
+            adv = ret - self.running_return  # template placeholder
 
             # TODO: normalize advantages to zero mean and unit variance and use 1e-8 for numerical stability
             # (Reminder, use unbiased=False for torch tensors)
+            adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
             # TODO: update running return using baseline decay
             # (x = baseline_decay * x + (1 - baseline_decay) * mean return)
+            self.running_return = (
+                self.baseline_decay * self.running_return
+                + (1 - self.baseline_decay) * ret.mean().item()
+            )
         else:
             ret = self.compute_returns(list(rewards))
             adv = (ret - ret.mean()) / (ret.std(unbiased=False) + 1e-8)
@@ -195,6 +229,7 @@ class ActorCriticAgent(AbstractAgent):
         total_steps: int,
         eval_interval: int = 10000,
         eval_episodes: int = 5,
+        log_path: str | None = None,
     ) -> None:
         eval_env = gym.make(self.env.spec.id)
         step_count = 0
@@ -219,6 +254,9 @@ class ActorCriticAgent(AbstractAgent):
                     print(
                         f"[Eval ] Step {step_count:6d} AvgReturn {mean_r:5.1f} ± {std_r:4.1f}"
                     )
+                    if log_path is not None:
+                        with open(log_path, mode="a") as f:
+                            csv.writer(f).writerow([step_count, mean_r, std_r])
 
             policy_loss, value_loss = self.update_agent(trajectory)
             total_return = sum(r for _, _, r, *_ in trajectory)
@@ -250,6 +288,7 @@ def main(cfg: DictConfig) -> None:
         cfg.train.total_steps,
         cfg.train.eval_interval,
         cfg.train.eval_episodes,
+        log_path=str(HydraConfig.get().runtime.output_dir) + "/ppo.csv",
     )
 
 

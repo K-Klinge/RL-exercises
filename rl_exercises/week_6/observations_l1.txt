@@ -1,0 +1,7 @@
+In the CartPole-v1 environment, the agents trained none, or the average baseline achieved the optimal score quickly, but exhibit a strong variance in IQM returns.
+This aligns with the theoretical expectations as both baseline methods apply no variance reduction.
+In contrast, the agent trained with the learned value function showed the lowest variance in IQM returns across all tested baselines, which is to be expected as the state-dependent learned value function reduces the variance significantly.
+Counterintuitively, the agent trained with the GAE baseline delivered the worst IQM returns and exhibited the highest variance. In theory, the GAE baseline should exhibit a variance comparable to the learned value function baseline.
+
+In the LunarLander-v3 environment, all tested baselines except the agent trained with the GAE baseline, delivered very similar performance and variance in IQM return.
+Again and against the theory, the GAE baseline delivered notably worse IQM returns and yielded higher variance, especially in the early stages of the training.
