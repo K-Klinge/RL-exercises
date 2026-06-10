@@ -30,7 +30,8 @@ dependencies = [
         "hydra-colorlog",
         "stable-baselines3>=2.0.0",
         "moviepy",
-        "rliable"
+        "rliable",
+        "hydra-joblib-launcher>=1.2.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,2 @@
+The actor critic model performed the worst across all tested models (Actor Critic, PPO, PPO with Improvements) by delivering significantly worse IQM return.
+Both PPO models (vanilla and with KL-Early Stopping and value loss clipping) performed similarly. However, the vanilla PPO yielded slightly better IQM returns compared to the modified PPO model.
