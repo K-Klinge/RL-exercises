@@ -21,13 +21,13 @@ import numpy as np
 from rliable import library as rly
 from rliable import metrics, plot_utils
 
-BASELINES = ("actor_critic", "vanilla", "improved")
+BASELINES = ("PPOAgent", "RNDPPOAgent")
 
 
 def discover_runs(root: Path) -> dict[str, dict[str, list[Path]]]:
     """Return {env: {baseline: [csv_paths]}} discovered under root."""
     runs: dict[str, dict[str, list[Path]]] = defaultdict(lambda: defaultdict(list))
-    for csv_path in root.rglob("ppo.csv"):
+    for csv_path in root.rglob("out.csv"):
         parts = csv_path.relative_to(root).parts
         # Expect <env>/<baseline>/seed_<i>/ppo.csv
         if len(parts) < 4:
@@ -101,7 +101,7 @@ def plot_env(env: str, by_baseline: dict[str, list[Path]], out_dir: Path) -> Non
         ylabel="IQM return",
         ax=ax,
     )
-    ax.set_title(f"{env}: actor-critic baselines")
+    ax.set_title(f"{env}: PPOAgent vs RNDPPOAgent")
     ax.legend(loc="lower right", fontsize=9)
     fig.tight_layout()
 

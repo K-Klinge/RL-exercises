@@ -4,14 +4,17 @@ On-policy Proximal Policy Optimization (PPO) with Random Network Distillation (R
 
 from typing import Any, List, Tuple
 
+import csv
+
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: F401
 import torch.optim as optim  # noqa: F401
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
-from rl_exercises.week_6.ppo import PPOAgent, set_seed
+from rl_exercises.week_6.ppo_sol import PPOAgent, set_seed
 from rl_exercises.week_7.rnd_utils import (
     DualHeadValueNetwork,
     PredictorNetwork,
@@ -106,7 +109,7 @@ class RNDPPOAgent(PPOAgent):
         )
 
         # TODO: Optimizer for combined_parameters with learning rate combined_lr (Adam)
-        self.optimizer = ...
+        self.optimizer = optim.Adam(combined_parameters, lr=combined_lr)
 
         # For normalization of observations and intrinsic rewards
         self.obs_rms = RunningMeanStd(shape=(obs_dim,))
@@ -220,14 +223,14 @@ class RNDPPOAgent(PPOAgent):
         rews_ext = torch.tensor(rewards_ext, dtype=torch.float32)
         rews_int = torch.tensor(rewards_int, dtype=torch.float32)
 
-        deltas_ext = ...
-        deltas_int = ...
+        deltas_ext = rews_ext + self.gamma * next_values_ext * (1 - dones) - values_ext
+        deltas_int = rews_int + self.gamma * next_values_int * (1 - dones) - values_int
 
         # GAE for extrinsic stream
         advs_ext: List[torch.Tensor] = []
         A = 0.0
         for delta, done in zip(reversed(deltas_ext), reversed(dones)):
-            A = ...
+            A = delta + self.gamma * self.gae_lambda * A * (1 - done)
             advs_ext.insert(0, A)
         advs_ext_t = torch.stack(advs_ext)
 
@@ -235,15 +238,18 @@ class RNDPPOAgent(PPOAgent):
         advs_int: List[torch.Tensor] = []
         A = 0.0
         for delta in reversed(deltas_int):
-            A = ...
+            A = delta + self.gamma * self.gae_lambda * A
             advs_int.insert(0, A)
         advs_int_t = torch.stack(advs_int)
 
-        returns_ext = ...
-        returns_int = ...
+        returns_ext = advs_ext_t + values_ext
+        returns_int = advs_int_t + values_int
 
         # TODO: Combined advantages weighted by coefficients, then normalize
-        combined_advs = ...
+        combined_advs = self.int_coef * advs_int_t + self.ext_coef * advs_ext_t
+        combined_advs = (combined_advs - combined_advs.mean()) / (
+            combined_advs.std(unbiased=False) + 1e-8
+        )
 
         return (
             combined_advs.detach(),
@@ -268,16 +274,16 @@ class RNDPPOAgent(PPOAgent):
             The RND bonus for the state.
         """
         # TODO: extract current state as a tensor
-        state_tensor = ...
+        state_tensor = torch.from_numpy(state).float()
 
         # TODO: compute MSE error between predictor and target embeddings as the bonus
         with torch.no_grad():
-            target_emb = ...
-            predictor_emb = ...
-        error = ...
+            target_emb = self.target_rnd(state_tensor)
+            predictor_emb = self.predictor_rnd(state_tensor)
+        error = (target_emb - predictor_emb).pow(2).mean()
 
         # TODO: scale by reward weight and return
-        bonus = ...
+        bonus = self.rnd_reward_weight * error.item()
         return bonus
 
     def update(self, trajectory: List[Any]) -> Tuple[float, float, float, float]:
@@ -304,8 +310,8 @@ class RNDPPOAgent(PPOAgent):
 
         # TODO: compute values and next values for both extrinsic and intrinsic streams without grad
         with torch.no_grad():
-            values_ext, values_int = ...
-            next_values_ext, next_values_int = ...
+            values_ext, values_int = self.value_fn(states)
+            next_values_ext, next_values_int = self.value_fn(next_states)
 
         # TODO: compute combined advantages and returns for extrinsic and intrinsic rewards
         combined_advs, _, _, returns_ext, returns_int = self.compute_gae(
@@ -328,23 +334,34 @@ class RNDPPOAgent(PPOAgent):
         for _ in range(self.epochs):
             for b_states, b_actions, b_oldlogp, b_adv, b_ret_ext, b_ret_int in loader:
                 # TODO: Policy loss (clipped PPO surrogate)
-                probs = ...
-                dist = ...
-                new_logp = ...
-                ratio = ...
-                policy_loss = ...
+                probs = self.policy(b_states)
+                dist = Categorical(probs)
+                new_logp = dist.log_prob(b_actions)
+                ratio = torch.exp(new_logp - b_oldlogp)
+                policy_loss = -torch.min(
+                    ratio * b_adv,
+                    torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * b_adv,
+                ).mean()
 
                 # TODO: Dual-head value loss (MSE for both ext and int heads)
-                value_preds_ext, value_preds_int = ...
-                value_loss = ...
+                value_preds_ext, value_preds_int = self.value_fn(b_states)
+                value_loss = F.mse_loss(value_preds_ext, b_ret_ext) + F.mse_loss(
+                    value_preds_int, b_ret_int
+                )
 
                 # TODO: Entropy loss
-                entropy_loss = ...
+                entropy_loss = -dist.entropy().mean()
 
                 # TODO: RND predictor loss with update_proportion mask
                 # (only a random subset of minibatch transitions updates the predictor)
-                mask = ...
-                rnd_loss = ...
+                target_emb = self.target_rnd(b_states).detach()
+                pred_emb = self.predictor_rnd(b_states)
+                rnd_errors = (pred_emb - target_emb).pow(2).mean(dim=1)
+                mask = (
+                    torch.rand(b_states.shape[0], device=b_states.device)
+                    < self.update_proportion
+                ).float()
+                rnd_loss = (rnd_errors * mask).sum() / torch.clamp(mask.sum(), min=1.0)
 
                 loss = (
                     policy_loss
@@ -368,6 +385,7 @@ class RNDPPOAgent(PPOAgent):
         total_steps: int,
         eval_interval: int = 10000,
         eval_episodes: int = 5,
+        log_path: str | None = None,
     ) -> None:
         """
         Run a training loop for a fixed number of environment steps with RND exploration bonus.
@@ -433,6 +451,9 @@ class RNDPPOAgent(PPOAgent):
                     print(
                         f"[Eval ] Step {step_count:6d} AvgReturn {mean_r:5.1f} ± {std_r:4.1f}"
                     )
+                    if log_path is not None:
+                        with open(log_path, mode="a") as f:
+                            csv.writer(f).writerow([step_count, mean_r, std_r])
 
             # PPO + RND update
             policy_loss, value_loss, entropy_loss, rnd_loss = self.update(trajectory)
@@ -505,6 +526,7 @@ def main(cfg: DictConfig) -> None:
         cfg.train.total_steps,
         cfg.train.eval_interval,
         cfg.train.eval_episodes,
+        log_path=str(HydraConfig.get().runtime.output_dir) + "/out.csv",
     )
 
 

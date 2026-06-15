@@ -9,6 +9,9 @@ where novelty(s) = RND prediction error at state s.
 
 from typing import Any, List, Set, Tuple
 
+import csv
+import os
+
 import gymnasium as gym
 import hydra
 import numpy as np
@@ -16,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: F401
 import torch.optim as optim  # noqa: F401
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from rl_exercises.week_6.ppo import PPOAgent, set_seed
 from rl_exercises.week_7.rnd_utils import (
@@ -167,7 +171,7 @@ class NovelDPPOAgent(PPOAgent):
         )
 
         # TODO: Optimizer for combined_parameters with learning rate combined_lr (Adam)
-        self.optimizer = ...
+        self.optimizer = optim.Adam(combined_parameters, lr=combined_lr)
 
         # Running statistics for observation and intrinsic reward normalization
         self.obs_rms = RunningMeanStd(shape=(obs_dim,))
@@ -188,9 +192,9 @@ class NovelDPPOAgent(PPOAgent):
         t = torch.from_numpy(obs_norm).float().unsqueeze(0)
         # TODO: Compute RND prediction error (MSE) between predictor and target embeddings
         with torch.no_grad():
-            target_emb = ...
-            predictor_emb = ...
-        return ...
+            target_emb = self.target_rnd(t)
+            predictor_emb = self.predictor_rnd(t)
+        return F.mse_loss(predictor_emb, target_emb).item()
 
     def _is_first_visit(self, obs: np.ndarray) -> bool:
         """
@@ -229,11 +233,13 @@ class NovelDPPOAgent(PPOAgent):
         """
         # TODO: compute NovelD bonus using the formula above
         # Hint: use self._rnd_error() for novelty and self._is_first_visit() for the first-visit indicator
+        # First-visit indicator: if s_{t+1} was already seen this episode, no bonus.
+        # (Calling _is_first_visit also records the visit, so call it exactly once.)
         if not self._is_first_visit(next_state):
             return 0.0
-        novelty_next = ...
-        novelty_curr = ...
-        bonus = ...
+        novelty_next = self._rnd_error(next_state)
+        novelty_curr = self._rnd_error(state)
+        bonus = max(novelty_next - self.noveld_alpha * novelty_curr, 0.0)
         return bonus
 
     def _init_obs_normalization(self) -> None:
@@ -349,14 +355,14 @@ class NovelDPPOAgent(PPOAgent):
         rews_ext = torch.tensor(rewards_ext, dtype=torch.float32)
         rews_int = torch.tensor(rewards_int, dtype=torch.float32)
 
-        deltas_ext = ...
-        deltas_int = ...
+        deltas_ext = rews_ext + self.gamma * next_values_ext * (1 - dones) - values_ext
+        deltas_int = rews_int + self.gamma * next_values_int * (1 - dones) - values_int
 
         # GAE for extrinsic stream (episodic: done mask applied)
         advs_ext: List[torch.Tensor] = []
         A = 0.0
         for delta, done in zip(reversed(deltas_ext), reversed(dones)):
-            A = ...
+            A = delta + self.gamma * self.gae_lambda * A * (1 - done)
             advs_ext.insert(0, A)
         advs_ext_t = torch.stack(advs_ext)
 
@@ -364,15 +370,18 @@ class NovelDPPOAgent(PPOAgent):
         advs_int: List[torch.Tensor] = []
         A = 0.0
         for delta in reversed(deltas_int):
-            A = ...
+            A = delta + self.gamma * self.gae_lambda * A
             advs_int.insert(0, A)
         advs_int_t = torch.stack(advs_int)
 
-        returns_ext = ...
-        returns_int = ...
+        returns_ext = advs_ext_t + values_ext
+        returns_int = advs_int_t + values_int
 
         # TODO: Combined advantages weighted by coefficients, then normalize
-        combined_advs = ...
+        combined_advs = self.int_coef * advs_int_t + self.ext_coef * advs_ext_t
+        combined_advs = (combined_advs - combined_advs.mean()) / (
+            combined_advs.std(unbiased=False) + 1e-8
+        )
 
         return (
             combined_advs.detach(),
@@ -407,8 +416,8 @@ class NovelDPPOAgent(PPOAgent):
 
         # TODO: compute values and next values for both extrinsic and intrinsic streams without grad
         with torch.no_grad():
-            values_ext, values_int = ...
-            next_values_ext, next_values_int = ...
+            values_ext, values_int = self.value_fn(states)
+            next_values_ext, next_values_int = self.value_fn(next_states)
 
         # TODO: compute combined advantages and returns for extrinsic and intrinsic rewards
         combined_advs, _, _, returns_ext, returns_int = self.compute_gae(
@@ -431,23 +440,36 @@ class NovelDPPOAgent(PPOAgent):
         for _ in range(self.epochs):
             for b_states, b_actions, b_oldlogp, b_adv, b_ret_ext, b_ret_int in loader:
                 # TODO: --- Policy loss (clipped PPO surrogate) ---
-                probs = ...
-                dist = ...
-                new_logp = ...
-                ratio = ...
-                policy_loss = ...
+                probs = self.policy(b_states)
+                dist = Categorical(probs)
+                new_logp = dist.log_prob(b_actions)
+                ratio = torch.exp(new_logp - b_oldlogp)
+                policy_loss = -torch.min(
+                    ratio * b_adv,
+                    torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * b_adv,
+                ).mean()
 
                 # TODO: --- Dual-head value loss (MSE for both ext and int heads) ---
-                value_preds_ext, value_preds_int = ...
-                value_loss = ...
+                value_preds_ext, value_preds_int = self.value_fn(b_states)
+                value_loss = F.mse_loss(value_preds_ext, b_ret_ext) + F.mse_loss(
+                    value_preds_int, b_ret_int
+                )
 
                 # TODO: --- Entropy loss ---
-                entropy_loss = ...
+                entropy_loss = -dist.entropy().mean()
 
                 # TODO: --- RND predictor loss (update_proportion mask) ---
                 # Only a random subset of the minibatch is used to update the predictor
-                mask = ...
-                rnd_loss = ...
+                target_emb = self.target_rnd(b_states).detach()
+                pred_emb = self.predictor_rnd(b_states)
+                rnd_errors = (pred_emb - target_emb).pow(2).mean(dim=1)
+                mask = (
+                    torch.rand(b_states.shape[0], device=b_states.device)
+                    < self.update_proportion
+                ).float()
+                rnd_loss = (rnd_errors * mask).sum() / torch.minimum(
+                    mask.sum(), torch.ones(1)
+                )
 
                 loss = (
                     policy_loss
@@ -473,11 +495,80 @@ class NovelDPPOAgent(PPOAgent):
             rnd_loss.item(),
         )
 
+    def capture_snapshot(
+        self,
+        eval_env: gym.Env,
+        snapshot_dir: str,
+        step_count: int,
+        n_episodes: int = 5,
+    ) -> None:
+        """
+        Roll out the current policy and dump an exploration "behavior snapshot".
+
+        For each step of each rollout we record the agent's planar position
+        (obs[0] = x, obs[1] = y for LunarLander) together with the current RND
+        novelty at that state. Saved as a compressed ``.npz`` so the plotting
+        script can build state-visitation and novelty heatmaps for several
+        points during training.
+
+        Parameters
+        ----------
+        eval_env : gym.Env
+            Environment to roll out in (kept separate from the training env).
+        snapshot_dir : str
+            Directory to write ``snapshot_<step>.npz`` into.
+        step_count : int
+            Current global training step (used in the filename and metadata).
+        n_episodes : int
+            Number of rollouts to collect for this snapshot.
+        """
+        os.makedirs(snapshot_dir, exist_ok=True)
+
+        positions: List[Tuple[float, float]] = []
+        novelties: List[float] = []
+        episode_ids: List[int] = []
+        returns: List[float] = []
+
+        for ep in range(n_episodes):
+            state, _ = eval_env.reset(seed=self.seed + 1000 + ep)
+            done = False
+            total_r = 0.0
+            while not done:
+                # Novelty of the visited state under the current RND predictor.
+                obs_norm = self._normalize_obs(state)
+                positions.append((float(state[0]), float(state[1])))
+                novelties.append(self._rnd_error(obs_norm))
+                episode_ids.append(ep)
+
+                action, _, _, _, _ = self.predict(state)
+                state, r, term, trunc, _ = eval_env.step(action)
+                done = term or trunc
+                total_r += r
+            returns.append(total_r)
+
+        out_path = os.path.join(snapshot_dir, f"snapshot_{step_count:07d}.npz")
+        np.savez_compressed(
+            out_path,
+            positions=np.asarray(positions, dtype=np.float32),
+            novelty=np.asarray(novelties, dtype=np.float32),
+            episode_ids=np.asarray(episode_ids, dtype=np.int32),
+            returns=np.asarray(returns, dtype=np.float32),
+            step_count=np.int64(step_count),
+        )
+        print(
+            f"[Snap ] Step {step_count:6d} wrote {out_path} "
+            f"({len(positions)} states, mean eval return {np.mean(returns):.1f})"
+        )
+
     def train(
         self,
         total_steps: int,
         eval_interval: int = 10000,
         eval_episodes: int = 5,
+        log_path: str | None = None,
+        snapshot_dir: str | None = None,
+        snapshot_fractions: Tuple[float, ...] = (0.1, 0.5, 1.0),
+        snapshot_episodes: int = 5,
     ) -> None:
         """
         Run training loop with NovelD intrinsic exploration bonus.
@@ -490,9 +581,22 @@ class NovelDPPOAgent(PPOAgent):
             Every this many steps, run evaluation.
         eval_episodes : int
             Number of episodes per evaluation.
+        log_path : str | None
+            CSV path for eval logging.
+        snapshot_dir : str | None
+            If set, write exploration behavior snapshots here at the
+            fractions of training given by ``snapshot_fractions``.
+        snapshot_fractions : Tuple[float, ...]
+            Fractions of ``total_steps`` at which to capture a snapshot.
+        snapshot_episodes : int
+            Rollouts collected per snapshot.
         """
         eval_env = gym.make(self.env.spec.id)
         step_count = 0
+
+        # Step thresholds at which to capture exploration snapshots.
+        snapshot_steps = sorted(int(round(f * total_steps)) for f in snapshot_fractions)
+        next_snapshot_idx = 0
 
         # Warm-up: initialize obs_rms and reward_rms before policy updates start
         self._init_obs_normalization()
@@ -544,11 +648,28 @@ class NovelDPPOAgent(PPOAgent):
                 prev_obs_norm = next_obs_norm
                 step_count += 1
 
+                # --- Exploration behavior snapshot ---
+                if (
+                    snapshot_dir is not None
+                    and next_snapshot_idx < len(snapshot_steps)
+                    and step_count >= snapshot_steps[next_snapshot_idx]
+                ):
+                    self.capture_snapshot(
+                        eval_env,
+                        snapshot_dir,
+                        step_count,
+                        n_episodes=snapshot_episodes,
+                    )
+                    next_snapshot_idx += 1
+
                 if step_count % eval_interval == 0:
                     mean_r, std_r = self.evaluate(eval_env, num_episodes=eval_episodes)
                     print(
                         f"[Eval ] Step {step_count:6d} AvgReturn {mean_r:5.1f} ± {std_r:4.1f}"
                     )
+                    if log_path is not None:
+                        with open(log_path, mode="a") as f:
+                            csv.writer(f).writerow([step_count, mean_r, std_r])
 
             # PPO + RND predictor update
             policy_loss, value_loss, entropy_loss, rnd_loss = self.update(trajectory)
@@ -624,10 +745,16 @@ def main(cfg: DictConfig) -> None:
         int_gamma=cfg.noveld.int_gamma,
         num_iterations_obs_norm_init=cfg.noveld.num_iterations_obs_norm_init,
     )
+    output_dir = str(HydraConfig.get().runtime.output_dir)
+    snapshot_cfg = cfg.get("snapshot", None)
     agent.train(
         cfg.train.total_steps,
         cfg.train.eval_interval,
         cfg.train.eval_episodes,
+        log_path=output_dir + "/out.csv",
+        snapshot_dir=output_dir + "/snapshots" if snapshot_cfg is not None else None,
+        snapshot_fractions=tuple(snapshot_cfg.fractions),
+        snapshot_episodes=snapshot_cfg.episodes,
     )
 
 
