@@ -4,14 +4,18 @@ Deep Q-Learning with RND implementation.
 
 from typing import Any, Dict, List, Tuple
 
+import csv
+
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
-from rl_exercises.week_4.dqn import DQNAgent, set_seed
+from rl_exercises.week_4.dqn_sol import DQNAgent, set_seed
 from rl_exercises.week_7.rnd_utils import PredictorNetwork, TargetNetwork  # noqa: F401
 from torch import nn  # noqa: F401
+from torch import optim
 
 
 class RNDDQNAgent(DQNAgent):
@@ -102,11 +106,17 @@ class RNDDQNAgent(DQNAgent):
         output_dim = rnd_hidden_size
 
         # Target network is frozen, predictor is trained to match it
-        self.target_network_rnd = ...
-        self.predictor_network_rnd = ...
+        self.target_network_rnd = TargetNetwork(
+            obs_dim, output_dim, n_layers=rnd_n_layers
+        )
+        self.predictor_network_rnd = PredictorNetwork(
+            obs_dim, output_dim, n_layers=rnd_n_layers
+        )
 
         # Optimizer for the predictor network
-        self.rnd_optimizer = ...
+        self.rnd_optimizer = optim.Adam(
+            self.predictor_network_rnd.parameters(), lr=rnd_lr
+        )
 
     def update_rnd(
         self, training_batch: List[Tuple[Any, Any, float, Any, bool, Dict]]
@@ -121,14 +131,14 @@ class RNDDQNAgent(DQNAgent):
         """
         # TODO: get next_states from the batch
         _, _, _, next_states, _, _ = zip(*training_batch)
-        next_states = ...
+        next_states = torch.stack([torch.from_numpy(s).float() for s in next_states])
 
         # TODO: compute the MSE between target and predictor embeddings
         with torch.no_grad():
-            target_embeddings = ...
+            target_embeddings = self.target_network_rnd(next_states)
         self.rnd_optimizer.zero_grad()
-        predictor_embeddings = ...
-        mse = ...
+        predictor_embeddings = self.predictor_network_rnd(next_states)
+        mse = (target_embeddings - predictor_embeddings).pow(2).mean()
 
         # TODO: update the RND network
         mse.backward()
@@ -150,19 +160,21 @@ class RNDDQNAgent(DQNAgent):
             The RND bonus for the state.
         """
         # TODO: extract current state as a tensor
-        state_tensor = ...
+        state_tensor = torch.from_numpy(state).float().unsqueeze(0)
 
         # TODO: compute MSE error between predictor and target embeddings as the bonus
         with torch.no_grad():
-            target_embedding = ...
-            predictor_embedding = ...
-        error = ...
+            target_embedding = self.target_network_rnd(state_tensor)
+            predictor_embedding = self.predictor_network_rnd(state_tensor)
+        error = (target_embedding - predictor_embedding).pow(2).mean()
 
         # TODO: scale by reward weight and return
-        bonus = ...
+        bonus = error.item() * self.rnd_reward_weight
         return bonus
 
-    def train(self, num_frames: int, eval_interval: int = 1000) -> None:
+    def train(
+        self, num_frames: int, eval_interval: int = 1000, log_path: str | None = None
+    ) -> None:
         """
         Run a training loop for a fixed number of frames.
 
@@ -185,7 +197,7 @@ class RNDDQNAgent(DQNAgent):
 
             # TODO: apply RND bonus
             # (TODO just the RND bonus, the other part of training loop is provided)
-            reward += ...
+            reward += self.get_rnd_bonus(next_state)
 
             # store and step
             self.buffer.add(state, action, reward, next_state, done or truncated, {})
@@ -212,6 +224,9 @@ class RNDDQNAgent(DQNAgent):
                     print(
                         f"Frame {frame}, AvgReward(10): {avg:.2f}, ε={self.epsilon():.3f}"
                     )
+                    if log_path is not None:
+                        with open(log_path, mode="a") as f:
+                            csv.writer(f).writerow([frame, avg, self.epsilon()])
 
         print("Training complete.")
 
@@ -241,7 +256,11 @@ def main(cfg: DictConfig):
         rnd_reward_weight=cfg.rnd.reward_weight,
     )
 
-    agent.train(cfg.train.num_frames, cfg.train.eval_interval)
+    agent.train(
+        cfg.train.num_frames,
+        cfg.train.eval_interval,
+        log_path=str(HydraConfig.get().runtime.output_dir) + "/out.csv",
+    )
 
 
 if __name__ == "__main__":

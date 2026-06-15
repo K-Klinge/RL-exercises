@@ -1,0 +1,7 @@
+The plots for the behavior snapshots are in "exploration.png". The snapshots were takenafter the agent had been trained for 10%, 50%, and 100% of the training steps using five episodes/rollouts.
+
+The first series of plots shows the state-visitation rate of each state, the second series shows the novelty of each visited state, and the third series visualizes the trajectory the agent took in the episode.
+
+In the early stages of training, the agent is hasn't learned much yet which can be seen as the most episodes share similar trajectories. Only one trajectory drastically differs from the others which leads to the states of the trajectory to have quiet large novelty values.
+After 50% of the training steps, the agent performs much worse as its crashed 3 out of 5 episodes without reaching the ground/goal. The remaining 2 episodes follow a trajectory of states with small novelty values indicating that the agent explored the environment quiet vell at this point.
+After the training is complete, it shows that the agent has learned to reach the ground/goal reliably. However, the agent left the left side of the environment unexplored indicated by large novelty values. Whereas the middle of the environment (where the goal is located) is well explored.

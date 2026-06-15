@@ -1,0 +1,4 @@
+The addition of random network distillation for PPO leads to a large drop in performance in the LunarLander environment, and the variance
+of the IQM returns is comparable in the two models.
+When using DQN as the backbone model, the performance of the RND and non-RND models are comparable. However, the variance
+of the IQM return of the RND model is much smaller than that of the non-RND model.
