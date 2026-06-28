@@ -1,0 +1,23 @@
+2.1 Hyperparameter Sensitivity
+a.) The results are shown in "21a.png".
+A planning horizon of 1 yields poor performance compared to the other configurations. Indicating that larger planning horizons are beneficial.
+This trend continues for a planning horizon of 3. However, the margin of improvement (h=3 -> h=5) becomes much smaller compared to h=1 -> h=3.
+The configurations with planning horizons larger than 5 (h=10, h=20) are performing worse than the configuration with h=5.
+
+In conclusion, the optimal planning horizon is 5. Larger planning horizons are beneficial to a certain point. Afterward, the performance degrades.
+
+b.) The results are shown in "21b.png".
+The balanced configuration yields the optimal performance using the smallest number of real environment steps.
+The aggressive configuration is a tiny bit worse than the balanced configuration in terms of overall IQM reward achieved.
+The conservative configuration performs worst in this comparison.
+
+c.) The results are shown in "21c.png".
+The buffer size does not affect the performance of the agent too much. All configurations are performing similarly.
+The only exception is the configuration with buffer size 1000. Its variance over the seeds is the highest of all configurations.
+This indicates that the buffer is too small to represent the true distribution of the environment.
+
+2.2 Distribution Shift
+-
+
+2.3 Failure-Mode Analysis
+-
