@@ -1,0 +1,8 @@
+1.1 Sample Efficiency
+a.) The results are in "11.png"
+Final PPO: 222 return * 0.8 = 178 return.
+Dyna-PPO achieves this score between steps 9000 and 10000 real environment steps. However, the normal PPO achieved this score a few steps earlier. An exact number is possible to give, since the eval_interval is set 1000 steps.
+b.) No, there is no penalty at the beginning of the training. The returns of both algorithms are close together. However, Dyna-PPO has smaller variance in returns.
+
+1.2 Model Prediction Accuracy
+-
